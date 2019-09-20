@@ -13,12 +13,26 @@ class CrawDailyMatch:
     db = client['NBA']
     collection1 = db['daily_match']
     collection2 = db['match_list']
+    collection3 = db['play_by_plays']
 
     def __init__(self):
         self.url_daily_match = "https://china.nba.com/static/data/scores/gamedaystatus_%s.json"
         self.url_daily_snapshot = 'https://china.nba.com/static/data/game/snapshot_%s.json'
+        self.url_playByPlays = 'https://china.nba.com/static/data/game/playbyplay_%s_%s.json'
+        self.code = 'utf-8'
 
-    def display_process(self, length, count, date):
+    def get_raw_data(self, url):
+        try:
+            time.sleep(random.uniform(1, 2))  # 避免爬取速度过快
+            r = requests.get(url)
+            r.raise_for_status()
+            r.encoding = self.code
+            raw_data = json.loads(r.content)
+        except:
+            raw_data = {}
+        return raw_data
+
+    def display_process(self, count, length, date):
         count = count + 1
         print('\r{:s}日{:d}场比赛数据获取进度:{:.2f}%'.format(date, length, count * 100 / length), end='')
         return count
@@ -31,39 +45,51 @@ class CrawDailyMatch:
         return game_time
 
     # 获取每日比赛场次与数据，包括球队总览与球员个人的数据
-    def daily_match_process(self, date):
+    def daily_process(self, date):
+        count = 0  # 进度计数器
         url_daily_match = self.url_daily_match % date
-        game_id = self.get_gameid(url_daily_match)
-        self.get_daily_match_info(game_id, date)
-        return ""
-
-    # 从start_url得到每场比赛的id
-    def get_gameid(self, url):
-        r = requests.get(url)
-        data = json.loads(r.content)
-        game_id = []
-        for each in data['payload']['gameDates'][0]['games']:
-            game_id.append(each['gameId'])
-        return game_id
-
-    def get_daily_match_info(self, game_id, date):
-        count = 0
-        match_list = []
+        [game_id, timestamp] = self.get_gameid(url_daily_match)  # 获取当日比赛ID,以及当日数据更新时间戳
+        match_list_data = {'date': date, 'url': url_daily_match, 'timestamp': timestamp, 'content': {}}
         for each in game_id:
-            url_daily_snapshot = self.url_daily_snapshot % each
-            r = requests.get(url_daily_snapshot)
-            raw_data = json.loads(r.content)
-            daily_match_data = self.resol_daily_match_data(raw_data['payload'], url_daily_snapshot)
-            self.save_daily_match(daily_match_data)
-            count = self.display_process(len(game_id), count, date)
+            raw_data = self.get_daily_match_info(each)  # 获取比赛详细数据
+            match_list_data = self.resol_match_list_data(match_list_data, raw_data)  # 获取并更新当日比赛列表
+            self.get_playByPlays_info(each, raw_data['payload']['boxscore']['period'])  # 获取文字直播信息
+            count = self.display_process(count, len(game_id), date)
+        self.save_match_list(match_list_data)  # 汇总整理好当日比赛列表后保存
         return ""
 
-    # 在此将一场比赛我们需要的信息汇总整理
-    def resol_daily_match_data(self, data, url):
+    # 从url_daily_match得到每场比赛的id
+    def get_gameid(self, url):
+        try:
+            time.sleep(random.uniform(1, 2))  # 避免爬取速度过快
+            r = requests.get(url)
+            r.raise_for_status()
+            r.encoding = self.code
+            data = json.loads(r.content)
+            game_id = []
+            for each in data['payload']['gameDates'][0]['games']:
+                game_id.append(each['gameId'])
+            return [game_id, data['timestamp']]
+        except:
+            return [[], ""]
+
+    # 获取每场比赛的具体数据, 并将信息汇总整理, 每次存入一场比赛数据
+    def get_daily_match_info(self, each):
+        time.sleep(random.uniform(1, 3))  # 避免爬取速度过快
+        url_daily_snapshot = self.url_daily_snapshot % each
+        raw_data = self.get_raw_data(url_daily_snapshot)
+        daily_match_data = self.resol_daily_match_data(raw_data, url_daily_snapshot)
+        self.save_daily_match(daily_match_data)
+        return raw_data
+
+    def resol_daily_match_data(self, raw_data, url):
+        data = raw_data['payload']
         home_data = data['homeTeam']
         away_data = data['awayTeam']
-        resol_data = {'gameId': data['gameProfile']['gameId'], 'url': url}
+        resol_data = {}
+        resol_data.update({'gameId': data['gameProfile']['gameId'], 'url': url, 'timestamp': raw_data['timestamp']})
         resol_data['gameTime'] = self.get_game_time(data['gameProfile']['utcMillis'])
+        resol_data['seasonType'] = data['gameProfile']['seasonType']
         resol_data.update({'homeMatchup': home_data['matchup'], 'awayMatchup': away_data['matchup']})
         resol_data.update({'homeProfile': home_data['profile'], 'awayProfile': away_data['profile']})
         resol_data.update({'homeStanding': home_data['standing'], 'awayStanding': away_data['standing']})
@@ -76,14 +102,49 @@ class CrawDailyMatch:
         if self.collection1.count_documents({'url': data['url']}) == 0:
             self.collection1.insert_one(data)
         else:
-            print('\n%s基础数据重复爬取\n' % data['gameId'])
+            if self.collection1.find_one({'url': data['url']})['timestamp'] == data['timestamp']:
+                print('\n%s基础数据重复爬取\n' % data['gameId'])
+            else:
+                self.collection1.update_one({'url': data['url']}, {'$set': data})
 
-    def resol_match_list_data(self):
+    # 汇总整理一天的比赛对阵概要，每次存入一天比赛列表
+    def resol_match_list_data(self, match_list_data, raw_data):
+        data = raw_data['payload']
+        match_content = data['homeTeam']['profile']['displayAbbr'] + str(data['boxscore']['homeScore']) + '-' + \
+                        data['awayTeam']['profile']['displayAbbr'] + str(data['boxscore']['awayScore'])
+        match_list_data['content'].update({data['gameProfile']['gameId']: match_content})
+        return match_list_data
 
+    def save_match_list(self, data):
+        if self.collection2.count_documents({'url': data['url']}) == 0:
+            self.collection2.insert_one(data)
+        else:
+            if self.collection2.find_one({'url': data['url']})['timestamp'] == data['timestamp']:
+                print('\n%s比赛列表数据重复爬取\n' % data['date'])
+            else:  # 数据更新
+                self.collection2.update_one({'url': data['url']}, {'$set': data})
+
+    # 获取每场比赛的文字直播数据，每次存入一场比赛文字直播数据
+    def get_playByPlays_info(self, each, period):
+        playByPlays_data = {'gameId': each, 'period': period, 'playByPlays': {}}
+        for i in range(1, int(period) + 1):
+            url_playByPlays = self.url_playByPlays % (each, str(i))
+            raw_data = self.get_raw_data(url_playByPlays)  # 已包含延时
+            playByPlays_data = self.resol_playByPlays_data(raw_data, i, playByPlays_data)
+        self.save_playByPlays(playByPlays_data)
+
+    def resol_playByPlays_data(self, raw_data, i, playByPlays_data):
+        data = raw_data['payload']['playByPlays'][0]['events']
+        data.reverse()
+        playByPlays_data['playByPlays'].update({'period_' + str(i): data})
+        return playByPlays_data
+
+    def save_playByPlays(self, data):
+        if self.collection3.count_documents({'gameId': data['gameId']}) == 0:
+            self.collection3.insert_one(data)
+        else:
+            print('\n%s文字直播数据重复爬取\n' % data['gameId'])
         return ""
-
-    def save_match_list(self):
-        return None
 
     # 主函数
     def get_game_profile(self):
@@ -91,12 +152,11 @@ class CrawDailyMatch:
             for m in range(4, 5):
                 if m < 10:
                     m = '0' + str(m)
-                for d in range(4, 6):
-                    time.sleep(random.uniform(1, 3))  # 避免爬取速度过快
-                    d = '0' + str(d)
+                for d in range(4, 5):
+                    if d < 10:
+                        d = '0' + str(d)
                     date = str(y) + "-" + str(m) + "-" + str(d)
-                    self.daily_match_process(date)
-
+                    self.daily_process(date)
         return ""
 
 
