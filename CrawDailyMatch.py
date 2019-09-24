@@ -4,22 +4,27 @@ import json
 import random
 import time
 
+import pandas
 import pymongo
 import requests
 
+import CrawPlayerInfo
+
 
 class CrawDailyMatch:
-    client = pymongo.MongoClient(host='localhost', port=27017)
-    db = client['NBA']
-    collection1 = db['daily_match']
-    collection2 = db['match_list']
-    collection3 = db['play_by_plays']
 
     def __init__(self):
+        client = pymongo.MongoClient(host='localhost', port=27017)
+        db = client['NBA']
         self.url_daily_match = "https://china.nba.com/static/data/scores/gamedaystatus_%s.json"
         self.url_daily_snapshot = 'https://china.nba.com/static/data/game/snapshot_%s.json'
         self.url_playByPlays = 'https://china.nba.com/static/data/game/playbyplay_%s_%s.json'
         self.code = 'utf-8'
+        self.mtlist = {'0', '14', '15', '16', '17', '19', '21', '22'}
+        self.collection1 = db['daily_match']
+        self.collection2 = db['match_list']
+        self.collection3 = db['play_by_plays']
+        pass
 
     def get_raw_data(self, url):
         try:
@@ -135,6 +140,10 @@ class CrawDailyMatch:
 
     def resol_playByPlays_data(self, raw_data, i, playByPlays_data):
         data = raw_data['payload']['playByPlays'][0]['events']
+        for each in data:
+            if each['messageType'] in self.mtlist:
+                self.mtlist.remove(each['messageType'])
+                print(each['messageType'] + each['description'])
         data.reverse()
         playByPlays_data['playByPlays'].update({'period_' + str(i): data})
         return playByPlays_data
@@ -146,19 +155,25 @@ class CrawDailyMatch:
             print('\n%s文字直播数据重复爬取\n' % data['gameId'])
         return ""
 
-    # 主函数
+    # 获取比赛信息的主入口
     def get_game_profile(self):
-        for y in range(2019, 2020):
-            for m in range(4, 5):
-                if m < 10:
-                    m = '0' + str(m)
-                for d in range(4, 5):
-                    if d < 10:
-                        d = '0' + str(d)
-                    date = str(y) + "-" + str(m) + "-" + str(d)
-                    self.daily_process(date)
+        start_time = '2019-03-01'
+        end_time = '2019-03-03'
+        craw_list = pandas.date_range(start_time, end_time)
+        for each in craw_list:
+            self.daily_process(each.strftime('%Y-%m-%d'))
+        # for y in range(2019, 2020):
+        #     for m in range(1, 4):
+        #         if m < 10:
+        #             m = '0' + str(m)
+        #         for d in range(1, 32):
+        #             if d < 10:
+        #                 d = '0' + str(d)
+        #             date = str(y) + "-" + str(m) + "-" + str(d)
+        #             self.daily_process(date)
         return ""
 
 
 if __name__ == '__main__':
+    CrawPlayerInfo.get_player_info()
     CrawDailyMatch().get_game_profile()
