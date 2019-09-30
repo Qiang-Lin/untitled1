@@ -8,7 +8,7 @@ import pandas
 import pymongo
 import requests
 
-import CrawPlayerInfo
+import CrawlPlayerInfo
 
 
 class CrawDailyMatch:
@@ -175,5 +175,5 @@ class CrawDailyMatch:
 
 
 if __name__ == '__main__':
-    CrawPlayerInfo.get_player_info()
+    CrawlPlayerInfo.get_player_info()
     CrawDailyMatch().get_game_profile()
